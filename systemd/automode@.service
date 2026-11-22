@@ -1,0 +1,23 @@
+# tmux 대신 systemd 사용자 유닛으로 돌릴 때.
+#   mkdir -p ~/.config/systemd/user && cp systemd/automode@.service ~/.config/systemd/user/
+#   sed -i "s|%h/Open-MMO-Automode|$PWD|" ~/.config/systemd/user/automode@.service   # 경로가 다르면
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now automode@neon
+#   journalctl --user -u automode@neon -f
+# WSL 에서는 systemd 가 켜져 있어야 한다 (/etc/wsl.conf 에 [boot] systemd=true).
+# 로그아웃 후에도 유지하려면: loginctl enable-linger $USER
+[Unit]
+Description=Open-MMO-Automode farm instance %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Open-MMO-Automode
+ExecStart=%h/Open-MMO-Automode/scripts/run.sh %i
+Restart=always
+RestartSec=10
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,92 @@
+# Open-MMO-Automode 인스턴스 설정 예시.
+# 복사해서 configs/<캐릭터이름>.toml 로 저장한다. (configs/ 는 git에 올라가지 않는다)
+#
+#   cp config/example.toml configs/neon.toml
+#   scripts/tmux-start.sh neon
+#
+# agent-client 의 data/config.toml 형식 그대로이며, [npcs.farm] 절만 이 프로젝트가 추가한 것이다.
+
+# 운영 서버. /ws 경로가 빠지면 "HTTP error: 200 OK" 로 실패한다.
+server = "wss://openmmo.to.nexus/ws"
+# 지형 높이 타일을 받아올 곳. 로컬 캐시는 인스턴스 폴더의 data/cache/height 에 쌓인다.
+terrain = "https://openmmo.to.nexus"
+terrain_cache = "data/cache/height"
+
+# 관전 패널 (127.0.0.1 전용). 인스턴스마다 다른 포트를 쓴다. 0이면 끔.
+watch_port = 8808
+
+# LLM 호출 간격이 곧 farm 판단 주기다. 1~2초면 충분하다.
+min_interval_secs = 1
+urgent_min_interval_secs = 1
+debounce_secs = 0
+idle_interval_secs = 2
+activity_window_secs = 30
+max_concurrent = 1
+request_timeout_secs = 20
+
+# farm 판단 기록. 하루 한 파일, 3일 보관.
+transcript_dir = "logs/transcripts"
+transcript_keep_days = 3
+
+# 내 구글 계정으로 로그인한다. 처음 한 번 터미널에 뜨는 URL과 코드를 아무 브라우저에서 입력하면
+# data/google.json 에 리프레시 토큰이 저장되고, 그 뒤로는 묻지 않는다.
+[auth]
+mode = "google"
+token_cache = "data/google.json"
+# client_secret 은 배포본 data/config.toml 의 값을 복사한다 (GOCSPX- 로 시작). 환경변수
+# GOOGLE_CLI_CLIENT_SECRET 으로 줘도 된다. 자세한 것은 upstream/doc/AGENT_CLIENT_QUICKSTART.md.
+# client_secret = "GOCSPX-..."
+
+[[npcs]]
+# 이미 있는 캐릭터 이름. 없으면 이 이름과 클래스로 새로 만든다.
+character_name = "Neon달빛"
+character_class = "knight"
+llm = "farm"
+always_active = true
+always_sprint = true
+
+# 기본 사냥 계획. 시간대 창(schedule)이 겹치면 그 창의 값이 이긴다.
+[npcs.farm]
+status_file = "logs/farm/{name}.json"   # 매 턴 덮어쓰는 상태 JSON (scripts/status.sh 가 읽는다)
+clear_secs = 20                          # 이 시간 동안 몬스터가 안 보이면 층을 옮긴다
+reissue_secs = 12                        # 같은 표적에 attack 을 다시 보내는 최소 간격
+engage_range = 30.0
+loot_range = 20.0
+
+[npcs.farm.plan]
+dungeon = "old_crypt"                    # 던전 id 또는 표시 이름 ("Old Crypt")
+floors = [1, 3]                          # 사냥 층 범위 (1층부터 아래로)
+potion_pct = 30                          # 이 HP% 밑에서 물약
+emergency_pct = 20                       # 이 HP% 밑에서 즉시 귀환
+potion = "healing_potion"
+potion_target = 5                        # 마을에서 이 수량까지 보충
+min_potions = 1                          # 이 수량 이하로 떨어지고 돈이 있으면 마을행
+food = "jerky"
+food_target = 6
+eat_below = 300                          # 포만감(최대 1000)이 이 밑이면 먹는다
+return_scroll = "scroll_of_return"
+return_scroll_target = 2
+loot = ["small_sword", "goblin_sword", "dagger", "apple", "cheese", "coin_pile"]
+sell = ["small_sword", "goblin_sword", "dagger"]
+keep = ["scroll_of_enchant_armor", "scroll_of_enchant_weapon"]
+open_chests = true                       # 해당 층 열쇠를 들고 있으면 상자를 연다
+rest = false
+
+# 시간대별 변경. at 는 로컬 시각 HH:MM-HH:MM (자정을 넘겨도 된다), days 는 mon..sun (비우면 매일).
+# 적지 않은 항목은 위 plan 값을 그대로 쓴다.
+[[npcs.farm.schedule]]
+at = "00:00-07:00"
+dungeon = "old_crypt"
+floors = [1, 3]
+
+[[npcs.farm.schedule]]
+at = "19:00-23:00"
+days = ["sat", "sun"]
+dungeon = "orc_warrens"
+floors = [5, 6]
+potion_pct = 40
+
+# 점검 시간: 던전에서 나와 마을에서 대기한다.
+[[npcs.farm.schedule]]
+at = "04:00-04:30"
+rest = true

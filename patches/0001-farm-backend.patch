@@ -1,0 +1,198 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 4210ee62..db5333ba 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -15,6 +15,7 @@ dependencies = [
+  "anyhow",
+  "async-trait",
+  "axum",
++ "chrono",
+  "flate2",
+  "futures-util",
+  "libc",
+@@ -54,6 +55,15 @@ dependencies = [
+  "memchr",
+ ]
+ 
++[[package]]
++name = "android_system_properties"
++version = "0.1.6"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ae221649c9976a6f6c56ae1facf410f3ddb33cc661c4b7b61020a912d4237fbc"
++dependencies = [
++ "libc",
++]
++
+ [[package]]
+ name = "anstream"
+ version = "1.0.0"
+@@ -277,6 +287,17 @@ dependencies = [
+  "rand_core 0.10.0",
+ ]
+ 
++[[package]]
++name = "chrono"
++version = "0.4.45"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
++dependencies = [
++ "iana-time-zone",
++ "num-traits",
++ "windows-link",
++]
++
+ [[package]]
+ name = "clap"
+ version = "4.6.0"
+@@ -340,6 +361,12 @@ version = "0.4.31"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "75984efb6ed102a0d42db99afb6c1948f0380d1d91808d5529916e6c08b49d8d"
+ 
++[[package]]
++name = "core-foundation-sys"
++version = "0.8.7"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
++
+ [[package]]
+ name = "cpufeatures"
+ version = "0.2.17"
+@@ -775,6 +802,30 @@ dependencies = [
+  "tracing",
+ ]
+ 
++[[package]]
++name = "iana-time-zone"
++version = "0.1.65"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e31bc9ad994ba00e440a8aa5c9ef0ec67d5cb5e5cb0cc7f8b744a35b389cc470"
++dependencies = [
++ "android_system_properties",
++ "core-foundation-sys",
++ "iana-time-zone-haiku",
++ "js-sys",
++ "log",
++ "wasm-bindgen",
++ "windows-core",
++]
++
++[[package]]
++name = "iana-time-zone-haiku"
++version = "0.1.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f"
++dependencies = [
++ "cc",
++]
++
+ [[package]]
+ name = "icu_collections"
+ version = "2.1.1"
+diff --git a/agent-client/Cargo.toml b/agent-client/Cargo.toml
+index 2de39635..68e18b18 100644
+--- a/agent-client/Cargo.toml
++++ b/agent-client/Cargo.toml
+@@ -15,6 +15,7 @@ futures-util = "0.3"
+ serde = { version = "1.0", features = ["derive"] }
+ serde_json = "1.0"
+ toml = "0.8"
++chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+ rand = "0.8"
+ tracing = "0.1"
+ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+diff --git a/agent-client/src/main.rs b/agent-client/src/main.rs
+index c6fa4a65..3c9a150a 100644
+--- a/agent-client/src/main.rs
++++ b/agent-client/src/main.rs
+@@ -3,6 +3,7 @@ mod claude;
+ mod codex;
+ mod driver;
+ mod dungeon;
++mod farm;
+ mod geom;
+ mod google_auth;
+ mod item_defs;
+@@ -42,6 +43,8 @@ pub enum LlmType {
+     /// No LLM driver: schedule and monster AI drive the NPC on their own.
+     #[default]
+     None,
++    /// Rule-based farm driver (`[npcs.farm]`): hunts, restocks and respawns on a schedule.
++    Farm,
+     /// Claude CLI (stdio subprocess)
+     Claude,
+     /// OpenRouter API (HTTP)
+diff --git a/agent-client/src/orchestrator.rs b/agent-client/src/orchestrator.rs
+index c0e0f28f..6ceff4d5 100644
+--- a/agent-client/src/orchestrator.rs
++++ b/agent-client/src/orchestrator.rs
+@@ -116,6 +116,8 @@ pub struct NpcConfig {
+     pub openai: OpenAiConfig,
+     #[serde(default)]
+     pub minimax: MiniMaxConfig,
++    #[serde(default)]
++    pub farm: crate::farm::FarmConfig,
+ 
+     // --- Auto-provisioning ---
+     /// Character name to create if no characters exist on this account.
+@@ -515,7 +517,7 @@ async fn run_npc_session(
+             let agent = npc
+                 .id
+                 .is_none()
+-                .then(|| build_llm_backend(npc, watch.clone(), shared))
++                .then(|| build_llm_backend(npc, watch.clone(), shared, None))
+                 .flatten();
+             roll_stats_with_agent(
+                 &mut ws_tx,
+@@ -893,6 +895,7 @@ impl NpcConfig {
+             LlmType::Codex => Some(&self.codex.system_prompt_file),
+             LlmType::Openai => Some(&self.openai.system_prompt_file),
+             LlmType::Minimax => Some(&self.minimax.system_prompt_file),
++            LlmType::Farm => None,
+             LlmType::None => None,
+         }
+     }
+@@ -1065,8 +1068,26 @@ fn build_llm_backend(
+     npc: &NpcConfig,
+     watch: Option<Arc<crate::watch::NpcWatch>>,
+     shared: &SharedResources,
++    state: Option<&Arc<Mutex<SharedState>>>,
+ ) -> Option<Arc<dyn driver::LlmBackend>> {
+     let label = npc.label();
++    if npc.llm == LlmType::Farm {
++        // Stat rolls at character creation run before any state exists; the
++        // class heuristic accepts them, as for `llm = "none"`.
++        let state = state?;
++        return match crate::farm::FarmBackend::new(Arc::clone(state), npc.farm.clone(), &label) {
++            Ok(inv) => {
++                info!("[{label}] farm driver enabled ({})", npc.farm.plan.label());
++                let inv: Arc<dyn driver::LlmBackend> = Arc::new(inv);
++                let inv = crate::transcript::TranscriptBackend::wrap(inv, shared.transcript.clone(), label);
++                Some(crate::watch::WatchedBackend::wrap(inv, watch))
++            }
++            Err(e) => {
++                error!("[{label}] farm driver rejected: {e}");
++                None
++            }
++        };
++    }
+     let system_prompt = match build_system_prompt(npc) {
+         Ok(p) => p,
+         Err(e) => {
+@@ -1113,7 +1134,7 @@ fn build_llm_backend(
+             minimax::MiniMaxInvoker::new(&npc.minimax, system_prompt)
+                 .map(|i| Arc::new(i) as Arc<dyn driver::LlmBackend>),
+         ),
+-        LlmType::None => return None,
++        LlmType::None | LlmType::Farm => return None,
+     };
+ 
+     match invoker {
+@@ -1164,7 +1185,7 @@ fn spawn_llm_task(
+     let idle_interval = Duration::from_secs(npc.idle_interval_secs);
+     let activity_window = Duration::from_secs(npc.activity_window_secs);
+ 
+-    let invoker = build_llm_backend(npc, watch, shared)?;
++    let invoker = build_llm_backend(npc, watch, shared, Some(state))?;
+ 
+     let state = Arc::clone(state);
+     let scheduler = scheduler.clone();

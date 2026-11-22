@@ -1,0 +1,8 @@
+# 계정별 설정(구글 client_secret, 캐릭터 이름)과 실행 산출물은 올리지 않는다.
+configs/
+instances/
+logs/
+# 서브모듈 안의 빌드 산출물은 서브모듈 쪽 .gitignore 가 다루지만, 혹시 몰라 한 번 더.
+upstream/target/
+*.log
+*.tmp
