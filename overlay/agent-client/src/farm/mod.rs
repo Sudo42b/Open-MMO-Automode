@@ -74,6 +74,8 @@ impl FarmBackend {
                 .values()
                 .map(|m| MonsterView {
                     id: m.id.clone(),
+                    x: m.position.x,
+                    z: m.position.z,
                     dist: d(m.position.x, m.position.z),
                     health: m.health,
                     floor: m.floor_level,

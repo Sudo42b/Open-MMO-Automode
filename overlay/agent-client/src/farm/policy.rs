@@ -19,8 +19,15 @@ const REISSUE_MOVE: Duration = Duration::from_secs(30);
 const REISSUE_RETURN: Duration = Duration::from_secs(15);
 const MAX_SHOP_ACTIONS: usize = 6;
 
+/// The driver's own chase gives up beyond `walk::MAX_CHASE_DISTANCE` (20 m),
+/// so anything farther is approached with a `move` first.
+const CHASE_LIMIT: f32 = 19.5;
+const REISSUE_APPROACH: Duration = Duration::from_secs(6);
+
 pub struct MonsterView {
     pub id: String,
+    pub x: f32,
+    pub z: f32,
     pub dist: f32,
     pub health: u32,
     pub floor: i8,
@@ -227,6 +234,19 @@ fn in_dungeon(
     live.sort_by(|a, b| a.dist.total_cmp(&b.dist));
     if let Some(target) = live.first() {
         mem.floor_empty_since = None;
+        if target.dist > CHASE_LIMIT {
+            if !due(mem.last_move_at, now, REISSUE_APPROACH) {
+                return Decision::wait(format!("closing in on {}", target.id));
+            }
+            mem.last_move_at = Some(now);
+            mem.last_attack = None;
+            // Aim at the monster's own cell: it stands on walkable ground,
+            // while a point interpolated towards it may sit inside a wall.
+            return Decision::one(
+                format!("{} is {:.0}m away: approach first", target.id, target.dist),
+                json!({"type": "move", "x": target.x, "z": target.z, "depth": snap.depth()}),
+            );
+        }
         let current = mem
             .last_attack
             .as_ref()
@@ -272,31 +292,59 @@ fn in_dungeon(
         );
     }
 
+    // Floors are only ever walked downward: the mover's stair routing climbs
+    // unreliably (a `move` to a shallower floor can hang the driver), so the
+    // way back up is always a return scroll, which also restocks in town.
     let depth = snap.depth();
     let (first, last) = (plan.first_floor(), plan.last_floor());
-    if depth < first || depth > last {
+    if depth < first {
         if !due(mem.last_move_at, now, REISSUE_MOVE) {
             return Decision::wait("heading into the floor range");
         }
         mem.last_move_at = Some(now);
         return Decision::one(
-            format!("floor {depth} outside {first}-{last}: go to {first}"),
+            format!("floor {depth} above {first}-{last}: go down to {first}"),
             json!({"type": "move", "target": snap.dungeon_name, "depth": first}),
         );
     }
     let empty_since = *mem.floor_empty_since.get_or_insert(now);
-    if now.duration_since(empty_since) < Duration::from_secs(cfg.clear_secs) {
-        return Decision::wait(format!("floor {depth} quiet; waiting for spawns"));
+    let quiet = now.duration_since(empty_since);
+    if depth < last {
+        if quiet < Duration::from_secs(cfg.clear_secs) {
+            return Decision::wait(format!("floor {depth} quiet; waiting for spawns"));
+        }
+        if !due(mem.last_move_at, now, REISSUE_MOVE) {
+            return Decision::wait("floor change pending");
+        }
+        mem.last_move_at = Some(now);
+        mem.floor_empty_since = None;
+        let next = depth + 1;
+        return Decision::one(
+            format!("floor {depth} cleared: move to {next}"),
+            json!({"type": "move", "target": snap.dungeon_name, "depth": next}),
+        );
     }
-    if !due(mem.last_move_at, now, REISSUE_MOVE) {
-        return Decision::wait("floor change pending");
+    if depth == last && quiet < Duration::from_secs(cfg.linger_secs) {
+        return Decision::wait(format!("last floor {depth} quiet; lingering for spawns"));
     }
-    let next = if depth >= last { first } else { depth + 1 };
-    mem.last_move_at = Some(now);
+    let why = if depth > last {
+        format!("floor {depth} is below {first}-{last}")
+    } else {
+        format!("floor {depth} stayed quiet {}s", quiet.as_secs())
+    };
+    mem.returning = true;
+    mem.town_trips += 1;
+    mem.last_return_at = Some(now);
     mem.floor_empty_since = None;
+    if scrolls > 0 {
+        return Decision::one(
+            format!("{why}: return scroll, restock, re-enter"),
+            json!({"type": "use", "item": plan.return_scroll}),
+        );
+    }
     Decision::one(
-        format!("floor {depth} cleared: move to {next}"),
-        json!({"type": "move", "target": snap.dungeon_name, "depth": next}),
+        format!("{why}: no scroll, walk out"),
+        json!({"type": "move", "target": snap.dungeon_name, "depth": 0}),
     )
 }
 
@@ -447,9 +495,9 @@ mod tests {
     fn attacks_nearest_and_holds_target() {
         let mut s = snap();
         s.monsters = vec![
-            MonsterView { id: "m7".into(), dist: 12.0, health: 10, floor: -2 },
-            MonsterView { id: "m3".into(), dist: 4.0, health: 10, floor: -2 },
-            MonsterView { id: "m9".into(), dist: 1.0, health: 10, floor: -3 },
+            mon("m7", 12.0, -2),
+            mon("m3", 4.0, -2),
+            mon("m9", 1.0, -3),
         ];
         let mut mem = Memory::default();
         let d = run(&s, &mut mem);
@@ -457,6 +505,32 @@ mod tests {
         assert_eq!(d.actions[0]["target"], "m3");
         let again = run(&s, &mut mem);
         assert!(again.actions.is_empty(), "same target is not re-sent at once");
+    }
+
+    #[test]
+    fn approaches_far_monster_before_attacking() {
+        let mut s = snap();
+        s.monsters = vec![mon("m5", 29.0, -2)];
+        let mut mem = Memory::default();
+        let d = run(&s, &mut mem);
+        assert_eq!(d.actions[0]["type"], "move");
+        assert_eq!(d.actions[0]["depth"], 2);
+        let x = d.actions[0]["x"].as_f64().unwrap() as f32;
+        assert!((x - (s.pos.0 + 29.0)).abs() < 0.01, "walks to the monster's cell, got {x}");
+        assert!(run(&s, &mut mem).actions.is_empty(), "approach is not re-sent at once");
+        s.monsters = vec![mon("m5", 9.0, -2)];
+        assert_eq!(run(&s, &mut mem).actions[0]["type"], "attack");
+    }
+
+    fn mon(id: &str, dist: f32, floor: i8) -> MonsterView {
+        MonsterView {
+            id: id.into(),
+            x: -1450.0 + dist,
+            z: 4700.0,
+            dist,
+            health: 10,
+            floor,
+        }
     }
 
     #[test]
@@ -495,6 +569,34 @@ mod tests {
         let d = run(&s, &mut mem);
         assert_eq!(d.actions[0]["type"], "move");
         assert_eq!(d.actions[0]["depth"], 3);
+    }
+
+    #[test]
+    fn last_floor_lingers_then_returns_by_scroll_instead_of_climbing() {
+        let mut s = snap();
+        s.floor = -3;
+        let mut mem = Memory::default();
+        mem.last_floor = Some(-3);
+        mem.floor_empty_since = Some(Instant::now() - Duration::from_secs(40));
+        assert!(run(&s, &mut mem).actions.is_empty(), "still lingering at 40s");
+        mem.floor_empty_since = Some(Instant::now() - Duration::from_secs(120));
+        let d = run(&s, &mut mem);
+        assert_eq!(d.actions[0]["type"], "use");
+        assert_eq!(d.actions[0]["item"], "scroll_of_return");
+        assert!(mem.returning);
+        assert!(
+            !d.actions.iter().any(|a| a["type"] == "move" && a["depth"] == 1),
+            "never asks the mover to climb"
+        );
+    }
+
+    #[test]
+    fn below_range_returns_by_scroll() {
+        let mut s = snap();
+        s.floor = -5;
+        let mut mem = Memory::default();
+        let d = run(&s, &mut mem);
+        assert_eq!(d.actions[0]["item"], "scroll_of_return");
     }
 
     #[test]

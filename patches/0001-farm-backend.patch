@@ -122,7 +122,7 @@ index c6fa4a65..3c9a150a 100644
      Claude,
      /// OpenRouter API (HTTP)
 diff --git a/agent-client/src/orchestrator.rs b/agent-client/src/orchestrator.rs
-index c0e0f28f..6ceff4d5 100644
+index c0e0f28f..bed604a0 100644
 --- a/agent-client/src/orchestrator.rs
 +++ b/agent-client/src/orchestrator.rs
 @@ -116,6 +116,8 @@ pub struct NpcConfig {
@@ -187,9 +187,21 @@ index c0e0f28f..6ceff4d5 100644
      };
  
      match invoker {
-@@ -1164,7 +1185,7 @@ fn spawn_llm_task(
+@@ -1163,8 +1184,19 @@ fn spawn_llm_task(
+     let debounce = Duration::from_secs(npc.debounce_secs);
      let idle_interval = Duration::from_secs(npc.idle_interval_secs);
      let activity_window = Duration::from_secs(npc.activity_window_secs);
++    // Farm turns are free and the policy polls state, so a long idle interval
++    // would leave the character standing between fights.
++    let (min_interval, urgent_min_interval, idle_interval) = if npc.llm == LlmType::Farm {
++        (
++            min_interval.min(Duration::from_secs(1)),
++            urgent_min_interval.min(Duration::from_secs(1)),
++            idle_interval.min(Duration::from_secs(2)),
++        )
++    } else {
++        (min_interval, urgent_min_interval, idle_interval)
++    };
  
 -    let invoker = build_llm_backend(npc, watch, shared)?;
 +    let invoker = build_llm_backend(npc, watch, shared, Some(state))?;

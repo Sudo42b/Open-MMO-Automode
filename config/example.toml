@@ -15,12 +15,6 @@ terrain_cache = "data/cache/height"
 # 관전 패널 (127.0.0.1 전용). 인스턴스마다 다른 포트를 쓴다. 0이면 끔.
 watch_port = 8808
 
-# LLM 호출 간격이 곧 farm 판단 주기다. 1~2초면 충분하다.
-min_interval_secs = 1
-urgent_min_interval_secs = 1
-debounce_secs = 0
-idle_interval_secs = 2
-activity_window_secs = 30
 max_concurrent = 1
 request_timeout_secs = 20
 
@@ -44,14 +38,21 @@ character_class = "knight"
 llm = "farm"
 always_active = true
 always_sprint = true
+# 판단 주기. 전역이 아니라 [[npcs]] 안에 적어야 적용된다. farm 모드는 어차피 1초/2초로 상한을 건다.
+min_interval_secs = 1
+urgent_min_interval_secs = 1
+debounce_secs = 0
+idle_interval_secs = 2
+activity_window_secs = 30
 
 # 기본 사냥 계획. 시간대 창(schedule)이 겹치면 그 창의 값이 이긴다.
 [npcs.farm]
 status_file = "logs/farm/{name}.json"   # 매 턴 덮어쓰는 상태 JSON (scripts/status.sh 가 읽는다)
 clear_secs = 20                          # 이 시간 동안 몬스터가 안 보이면 층을 옮긴다
+linger_secs = 90                         # 마지막 층에서 리스폰을 기다리는 시간. 지나면 귀환 주문서로 나와 보급 후 재입장
 reissue_secs = 12                        # 같은 표적에 attack 을 다시 보내는 최소 간격
 engage_range = 30.0
-loot_range = 20.0
+loot_range = 18.0
 
 [npcs.farm.plan]
 dungeon = "old_crypt"                    # 던전 id 또는 표시 이름 ("Old Crypt")

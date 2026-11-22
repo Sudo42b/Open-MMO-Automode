@@ -14,6 +14,9 @@ pub struct FarmConfig {
     pub status_file: String,
     /// A floor with no monster in sight for this long is considered cleared.
     pub clear_secs: u64,
+    /// On the deepest floor of the range, wait this long for respawns before
+    /// leaving by return scroll (floors are never climbed on foot).
+    pub linger_secs: u64,
     /// The same attack target is re-sent at most this often.
     pub reissue_secs: u64,
     /// Monsters farther than this are left alone.
@@ -29,9 +32,10 @@ impl Default for FarmConfig {
             schedule: Vec::new(),
             status_file: "logs/farm/{name}.json".to_string(),
             clear_secs: 20,
+            linger_secs: 90,
             reissue_secs: 12,
             engage_range: 30.0,
-            loot_range: 20.0,
+            loot_range: 18.0,
         }
     }
 }
